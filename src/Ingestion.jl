@@ -2,12 +2,13 @@ module Ingestion
 
 using PromptingTools
 using StaticArrays
-using JSON3
-using StructTypes
+using Serialization
 
-export Document, ParentChunk, ChildChunk, BinaryIndex
-export load_documents, hierarchical_chunk, embed_and_quantize!, save_database, load_database
+export Document, ParentChunk, ChildChunk, BinaryIndex, VectorDB
+export load_documents, hierarchical_chunk, embed_and_quantize, save_database, load_database
 export compress_to_binary
+
+const SUPPORTED_EXTS = (".txt", ".md")
 
 # ─── Data Structures ──────────────────────────────────────────────
 
@@ -21,28 +22,23 @@ struct ParentChunk
     doc_id::String
     text::String
 end
-StructTypes.StructType(::Type{ParentChunk}) = StructTypes.Struct()
 
 struct ChildChunk
     id::String
     parent_id::String
     text::String
 end
-StructTypes.StructType(::Type{ChildChunk}) = StructTypes.Struct()
 
-"""In-memory binary index: vector of SVector{N,Int8} for hamming search."""
-struct BinaryIndex
-    vectors::Vector{Vector{Int8}}  # each inner vector is the binary-quantized embedding
-    n_bytes::Int                   # number of bytes per quantized vector
+"""In-memory binary index: vector of SVector{N,UInt8} for hamming search."""
+struct BinaryIndex{N}
+    vectors::Vector{SVector{N, UInt8}}  # heavily optimized zero-allocation distances
 end
-StructTypes.StructType(::Type{BinaryIndex}) = StructTypes.Struct()
 
-struct VectorDB
+struct VectorDB{N}
     parents::Vector{ParentChunk}
     children::Vector{ChildChunk}
-    index::BinaryIndex
+    index::BinaryIndex{N}
 end
-StructTypes.StructType(::Type{VectorDB}) = StructTypes.Struct()
 
 # ─── Document Loading ─────────────────────────────────────────────
 
@@ -54,7 +50,7 @@ function load_documents(folder_path::String)
     end
     for (root, dirs, files) in walkdir(folder_path)
         for file in files
-            if endswith(lowercase(file), ".txt") || endswith(lowercase(file), ".md")
+            if any(ext -> endswith(lowercase(file), ext), SUPPORTED_EXTS)
                 path = joinpath(root, file)
                 content = read(path, String)
                 push!(docs, Document(path, content))
@@ -67,16 +63,22 @@ end
 # ─── Chunking ─────────────────────────────────────────────────────
 
 function _chunk_text(text::String, chunk_size::Int, overlap::Int)
-    words = split(text)
-    chunks = String[]
+    # Using SubStrings to avoid mass allocation
+    matches = collect(eachmatch(r"\S+", text))
+    chunks = SubString{String}[]
     step = max(1, chunk_size - overlap)
     i = 1
-    while i <= length(words)
-        end_idx = min(i + chunk_size - 1, length(words))
-        push!(chunks, join(words[i:end_idx], " "))
+    n = length(matches)
+    while i <= n
+        start_idx = matches[i].offset
+        end_idx = min(i + chunk_size - 1, n)
+        # the end offset of the last word in the chunk
+        end_offset = matches[end_idx].offset + length(matches[end_idx].match) - 1
+        
+        push!(chunks, SubString(text, start_idx, end_offset))
         i += step
     end
-    return chunks
+    return String.(chunks) # string conversion at the very end to free original string refs
 end
 
 function hierarchical_chunk(docs::Vector{Document}; parent_words=300, child_words=75, parent_overlap=50, child_overlap=15)
@@ -102,17 +104,19 @@ end
 # ─── Binary Quantization ─────────────────────────────────────────
 
 """
-    compress_to_binary(embedding::AbstractVector{<:AbstractFloat}) -> Vector{Int8}
+    compress_to_binary(embedding::AbstractVector{<:AbstractFloat}) -> Vector{UInt8}
 
 Generalized binary quantization: each float > 0 becomes a 1-bit,
 packed 8 per byte. Handles any embedding dimension divisible by 8.
 """
 function compress_to_binary(embedding::AbstractVector{F}) where {F<:AbstractFloat}
     dim = length(embedding)
+    @assert dim % 8 == 0 "Embedding dimension ($dim) must be divisible by 8"
+    
     n_bytes = dim ÷ 8
-    out = Vector{Int8}(undef, n_bytes)
+    out = Vector{UInt8}(undef, n_bytes)
 
-    @inbounds for i in 0:(n_bytes - 1)
+    @inbounds for i in 0:(n_bytes-1)
         byte_val = 0x00
         base_idx = i * 8
         byte_val |= (UInt8(embedding[base_idx+1] > 0.0f0) << 0)
@@ -123,52 +127,65 @@ function compress_to_binary(embedding::AbstractVector{F}) where {F<:AbstractFloa
         byte_val |= (UInt8(embedding[base_idx+6] > 0.0f0) << 5)
         byte_val |= (UInt8(embedding[base_idx+7] > 0.0f0) << 6)
         byte_val |= (UInt8(embedding[base_idx+8] > 0.0f0) << 7)
-        out[i+1] = reinterpret(Int8, byte_val)
+        out[i+1] = byte_val
     end
     return out
 end
 
 # ─── Embedding + Quantization ────────────────────────────────────
 
-function embed_and_quantize!(children::Vector{ChildChunk}; model="embeddinggemma:300m-qat-q4_0")
+function embed_and_quantize(children::Vector{ChildChunk}; model="embeddinggemma:300m-qat-q4_0")
     schema = PromptingTools.OllamaSchema()
-    binary_vectors = Vector{Vector{Int8}}()
-    n_bytes = 0
-
-    println("Embedding and quantizing $(length(children)) chunks...")
-    for i in eachindex(children)
-        msg = aiembed(schema, children[i].text, copy; model=model)
-        raw = Vector{Float32}(msg.content)
-
-        bin = compress_to_binary(raw)
-        push!(binary_vectors, bin)
-
-        if n_bytes == 0
-            n_bytes = length(bin)
-            println("  Detected embedding dim=$(length(raw)), quantized to $n_bytes bytes")
-        end
-
-        if i % 10 == 0
-            println("  Processed $i/$(length(children)) chunks.")
+    
+    if isempty(children)
+        return BinaryIndex{0}(SVector{0,UInt8}[])
+    end
+    
+    @info "Embedding and quantizing $(length(children)) chunks..."
+    
+    # Process the first chunk to detect dimension
+    msg1 = aiembed(schema, children[1].text; model=model)
+    bin1 = compress_to_binary(msg1.content)
+    N = length(bin1)
+    
+    binary_vectors = Vector{SVector{N, UInt8}}(undef, length(children))
+    binary_vectors[1] = SVector{N, UInt8}(bin1)
+    @info "Detected embedding dim=$(length(msg1.content)), quantized to $N bytes"
+    
+    if length(children) > 1
+        asyncmap(2:length(children); ntasks=10) do i
+            # Basic retry on embedding 
+            local msg
+            for attempt in 1:3
+                try
+                    msg = aiembed(schema, children[i].text; model=model)
+                    break
+                catch e
+                    if attempt == 3
+                        rethrow(e)
+                    end
+                    sleep(1)
+                end
+            end
+            
+            binary_vectors[i] = SVector{N, UInt8}(compress_to_binary(msg.content))
+            if i % 10 == 0
+                @info "Processed $i/$(length(children)) chunks."
+            end
         end
     end
-    println("Done embedding and quantizing!")
-    return BinaryIndex(binary_vectors, n_bytes)
+    @info "Done embedding and quantizing!"
+    return BinaryIndex{N}(binary_vectors)
 end
 
 # ─── Persistence ──────────────────────────────────────────────────
 
-function save_database(file_path::String, parents::Vector{ParentChunk}, children::Vector{ChildChunk}, index::BinaryIndex)
-    db = VectorDB(parents, children, index)
-    open(file_path, "w") do f
-        JSON3.write(f, db)
-    end
+function save_database(file_path::String, db::VectorDB{N}) where N
+    serialize(file_path, db)
 end
 
 function load_database(file_path::String)
-    bytes = read(file_path)
-    db = JSON3.read(bytes, VectorDB)
-    return db.parents, db.children, db.index
+    return deserialize(file_path)
 end
 
 end # module

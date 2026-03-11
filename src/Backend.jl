@@ -2,9 +2,12 @@ module Backend
 
 using PromptingTools
 using Base.Threads
-using ..Ingestion: ParentChunk, ChildChunk, BinaryIndex, compress_to_binary
+using StaticArrays
+using ..Ingestion: ParentChunk, ChildChunk, BinaryIndex, compress_to_binary, VectorDB
 
 export retrieve_context, generate_answer
+
+const SCHEMA = PromptingTools.OllamaSchema()
 
 # ─── SIMD Hamming Distance ────────────────────────────────────────
 
@@ -18,55 +21,7 @@ function hamming_distance(x1, x2)
     s
 end
 
-# ─── MaxHeap for Top-K (zero-allocation after init) ──────────────
-
-mutable struct MaxHeap
-    const data::Vector{Pair{Int,Int}}
-    current_idx::Int
-    const k::Int
-
-    function MaxHeap(k::Int)
-        new(fill((typemax(Int) => -1), k), 1, k)
-    end
-end
-
-function insert!(heap::MaxHeap, value::Pair{Int,Int})
-    if heap.current_idx <= heap.k
-        heap.data[heap.current_idx] = value
-        heap.current_idx += 1
-        if heap.current_idx > heap.k
-            makeheap!(heap)
-        end
-    elseif value.first < heap.data[1].first
-        heap.data[1] = value
-        heapify!(heap, 1)
-    end
-end
-
-function makeheap!(heap::MaxHeap)
-    for i in div(heap.k, 2):-1:1
-        heapify!(heap, i)
-    end
-end
-
-function heapify!(heap::MaxHeap, i::Int)
-    left = 2 * i
-    right = 2 * i + 1
-    largest = i
-
-    if left <= length(heap.data) && heap.data[left].first > heap.data[largest].first
-        largest = left
-    end
-
-    if right <= length(heap.data) && heap.data[right].first > heap.data[largest].first
-        largest = right
-    end
-
-    if largest != i
-        heap.data[i], heap.data[largest] = heap.data[largest], heap.data[i]
-        heapify!(heap, largest)
-    end
-end
+using DataStructures
 
 # ─── K-Closest Search ─────────────────────────────────────────────
 
@@ -76,12 +31,22 @@ function _k_closest(
     k::Int;
     startind::Int=1,
 ) where {T<:Integer,V<:AbstractVector{T}}
-    heap = MaxHeap(k)
+    # We use a MaxHeap to keep the k smallest distances (largest elements get popped).
+    # Since DataStructures.BinaryMaxHeap stores elements and pops the maximum,
+    # we want to keep the k items with the smallest distance.
+    # We will use pairs, ordered by distance. Default order for Pair is to compare the first element,
+    # which is exactly what we want (distance => index).
+    heap = BinaryMaxHeap{Pair{Int,Int}}()
+    sizehint!(heap, k + 1)
+    
     @inbounds for i in eachindex(db)
         d = hamming_distance(db[i], query)
-        insert!(heap, d => startind + i - 1)
+        push!(heap, d => startind + i - 1)
+        if length(heap) > k
+            pop!(heap) # remove the maximum distance
+        end
     end
-    return heap.data
+    return heap.valtree
 end
 
 function k_closest_parallel(
@@ -93,12 +58,12 @@ function k_closest_parallel(
     t = nthreads()
     # Ensure we don't create empty ranges
     chunk_size = max(1, n ÷ t)
-    task_ranges = [(i:min(i + chunk_size - 1, n)) for i = 1:chunk_size:n]
+    task_ranges = filter(!isempty, [(i:min(i + chunk_size - 1, n)) for i = 1:chunk_size:n])
     tasks = map(task_ranges) do r
         Threads.@spawn _k_closest(view(db, r), query, min(k, length(r)); startind=r[1])
     end
     results = fetch.(tasks)
-    # Merge all heaps, sort, take top k
+    # Merge all heaps, sort, take top k (TODO: O(t*k*log(t)) merge ideally)
     merged = vcat(results...)
     sort!(merged, by=x -> x[1])
     return merged[1:min(k, length(merged))]
@@ -108,47 +73,60 @@ end
 
 function retrieve_context(
     query::String,
-    parents::Vector{ParentChunk},
-    children::Vector{ChildChunk},
-    index::BinaryIndex;
+    db::VectorDB{N};
     k::Int=3,
     model="embeddinggemma:300m-qat-q4_0"
-)
-    schema = PromptingTools.OllamaSchema()
-
+) where N
     # 1. Embed and quantize the query
-    msg = aiembed(schema, query, copy; model=model)
+    msg = aiembed(SCHEMA, query, copy; model=model)
     q_raw = Vector{Float32}(msg.content)
-    q_bin = compress_to_binary(q_raw)
+    q_bin = SVector{N, UInt8}(compress_to_binary(q_raw))
 
     # 2. Fast hamming search over quantized index
-    db = index.vectors
-    # Fetch more candidates than k to ensure we get k unique parents
-    n_candidates = min(length(db), k * 5)
-    closest = k_closest_parallel(db, q_bin, n_candidates)
-
-    # 3. Map child indices → unique parent chunks
-    top_parent_ids = String[]
+    db_vectors = db.index.vectors
+    n_candidates = k * 2
+    
+    top_parent_ids = Set{String}()
     top_parents = ParentChunk[]
+    
+    # Pre-build dictionary for O(1) lookups
+    parent_dict = Dict{String, ParentChunk}(p.id => p for p in db.parents)
 
-    for pair in closest
-        child_idx = pair.second
-        if child_idx < 1 || child_idx > length(children)
-            continue
-        end
-        p_id = children[child_idx].parent_id
+    while length(top_parents) < k && n_candidates <= length(db_vectors)
+        closest = k_closest_parallel(db_vectors, q_bin, n_candidates)
+        
+        empty!(top_parent_ids)
+        empty!(top_parents)
 
-        if !(p_id in top_parent_ids)
-            push!(top_parent_ids, p_id)
-            p_idx = findfirst(p -> p.id == p_id, parents)
-            if p_idx !== nothing
-                push!(top_parents, parents[p_idx])
+        for pair in closest
+            child_idx = pair.second
+            if child_idx < 1 || child_idx > length(db.children)
+                continue
+            end
+            p_id = db.children[child_idx].parent_id
+
+            if !(p_id in top_parent_ids)
+                push!(top_parent_ids, p_id)
+                if haskey(parent_dict, p_id)
+                    push!(top_parents, parent_dict[p_id])
+                end
+            end
+
+            if length(top_parents) >= k
+                break
             end
         end
-
+        
         if length(top_parents) >= k
             break
         end
+
+        # Request a larger batch if we didn't get enough unique parents
+        new_candidates = n_candidates * 4
+        if n_candidates == length(db_vectors)
+            break
+        end
+        n_candidates = min(length(db_vectors), new_candidates)
     end
 
     return top_parents
@@ -159,19 +137,12 @@ end
 function generate_answer(query::String, context_parents::Vector{ParentChunk}; model="gemma3:1b")
     context_str = join([p.text for p in context_parents], "\n\n---\n\n")
 
-    prompt = """
-    You are a helpful AI assistant. Use the following context to answer the user's question.
-    If the answer is not contained in the context, say "I don't have enough information to answer that."
+    prompt = string("You are a helpful AI assistant. Use the following context to answer the user's question.\n",
+        "If the answer is not contained in the context, say \"I don't have enough information to answer that.\"\n\n",
+        "Context:\n", context_str, "\n\n",
+        "User Question:\n", query)
 
-    Context:
-    $context_str
-
-    User Question:
-    $query
-    """
-
-    schema = PromptingTools.OllamaSchema()
-    msg = aigenerate(schema, prompt; model=model)
+    msg = aigenerate(SCHEMA, prompt; model=model)
     return msg.content
 end
 

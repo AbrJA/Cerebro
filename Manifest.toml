@@ -2,7 +2,7 @@
 
 julia_version = "1.12.5"
 manifest_format = "2.0"
-project_hash = "1991e8b14a4b8d43bf533499bcdf791e0925c5a2"
+project_hash = "c6b4a84f5ca8a4424c089a8666295658b9f5e678"
 
 [[deps.AbstractTrees]]
 git-tree-sha1 = "2d9c9a55f9c93e8887ad391fbae72f8ef55e1177"
@@ -33,7 +33,7 @@ uuid = "d1d4a3ce-64b1-5f1a-9ba4-7e7e69966f35"
 version = "0.1.9"
 
 [[deps.Cerebro]]
-deps = ["Genie", "JSON3", "LinearAlgebra", "PromptingTools", "StructTypes"]
+deps = ["Genie", "JSON3", "LinearAlgebra", "PromptingTools", "StaticArrays", "StructTypes"]
 path = "."
 uuid = "12654e05-2770-44db-a380-e47612e7b9ed"
 version = "0.1.0"
@@ -89,6 +89,12 @@ deps = ["Serialization", "Sockets"]
 git-tree-sha1 = "21d088c496ea22914fe80906eb5bce65755e5ec8"
 uuid = "f0e56b4a-5159-44fe-b623-3e5288b988bb"
 version = "2.5.1"
+
+[[deps.DataStructures]]
+deps = ["OrderedCollections"]
+git-tree-sha1 = "e357641bb3e0638d353c4b29ea0e40ea644066a6"
+uuid = "864edb3b-99cc-5e75-8d2d-829cb0a9cfe8"
+version = "0.19.3"
 
 [[deps.Dates]]
 deps = ["Printf"]
