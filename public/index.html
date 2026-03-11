@@ -4,8 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Cerebro RAG Chat</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <meta name="description" content="Cerebro — an AI-powered document question answering system using Retrieval Augmented Generation.">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
     <style>
         :root {
             --primary: #3b82f6;
@@ -17,9 +19,32 @@
             --border: #e5e7eb;
             --user-msg: #3b82f6;
             --ai-msg: #f3f4f6;
+            --success: #22c55e;
+            --warning: #f59e0b;
+            --error: #ef4444;
         }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --primary: #60a5fa;
+                --primary-hover: #3b82f6;
+                --bg: #0f172a;
+                --surface: #1e293b;
+                --text: #f1f5f9;
+                --text-light: #94a3b8;
+                --border: #334155;
+                --user-msg: #3b82f6;
+                --ai-msg: #334155;
+                --success: #4ade80;
+                --warning: #fbbf24;
+                --error: #f87171;
+            }
+        }
+
+        * { box-sizing: border-box; }
+
         body { 
-            font-family: 'Inter', sans-serif; 
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; 
             background-color: var(--bg); 
             margin: 0; 
             padding: 0; 
@@ -27,7 +52,9 @@
             justify-content: center; 
             height: 100vh;
             color: var(--text);
+            transition: background-color 0.3s, color 0.3s;
         }
+
         #app { 
             width: 100%; 
             max-width: 900px; 
@@ -35,54 +62,96 @@
             display: flex; 
             flex-direction: column; 
             height: 100vh; 
-            box-shadow: 0 10px 25px rgba(0,0,0,0.05); 
+            box-shadow: 0 10px 25px rgba(0,0,0,0.08);
+            transition: background-color 0.3s;
         }
+
         header { 
             background: var(--surface); 
-            padding: 20px 30px; 
-            text-align: center; 
-            font-size: 1.5rem; 
+            padding: 16px 24px; 
+            font-size: 1.4rem; 
             font-weight: 700;
             border-bottom: 1px solid var(--border);
             display: flex;
             align-items: center;
-            gap: 15px;
+            gap: 12px;
+            justify-content: space-between;
+            transition: background-color 0.3s, border-color 0.3s;
         }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
         .logo {
-            width: 32px;
-            height: 32px;
-            background: var(--primary);
-            border-radius: 8px;
+            width: 34px;
+            height: 34px;
+            background: linear-gradient(135deg, var(--primary), #8b5cf6);
+            border-radius: 10px;
             display: flex;
             align-items: center;
             justify-content: center;
             color: white;
-            font-size: 14px;
+            font-size: 15px;
+            font-weight: 700;
         }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.75rem;
+            color: var(--text-light);
+            font-weight: 500;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--text-light);
+            transition: background 0.3s;
+        }
+
+        .status-dot.connected { background: var(--success); }
+        .status-dot.degraded  { background: var(--warning); }
+        .status-dot.error     { background: var(--error); }
+
         #messages { 
             flex-grow: 1; 
-            padding: 30px; 
+            padding: 24px; 
             overflow-y: auto; 
             display: flex; 
             flex-direction: column; 
-            gap: 20px; 
+            gap: 16px; 
             scroll-behavior: smooth;
         }
+
         .message-wrapper {
             display: flex;
             flex-direction: column;
             max-width: 85%;
+            animation: fadeIn 0.25s ease-out;
         }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
         .user-wrapper { align-self: flex-end; align-items: flex-end; }
-        .ai-wrapper { align-self: flex-start; align-items: flex-start; }
+        .ai-wrapper   { align-self: flex-start; align-items: flex-start; }
         
         .message { 
-            padding: 16px 20px; 
-            border-radius: 12px; 
-            line-height: 1.6; 
-            font-size: 1rem;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+            padding: 14px 18px; 
+            border-radius: 14px; 
+            line-height: 1.65; 
+            font-size: 0.95rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
             overflow-x: auto;
+            transition: background 0.3s;
         }
         .user-msg { 
             background: var(--user-msg); 
@@ -94,59 +163,84 @@
             color: var(--text); 
             border-bottom-left-radius: 4px;
         }
+
+        .ai-msg pre {
+            background: rgba(0,0,0,0.06);
+            border-radius: 8px;
+            padding: 12px;
+            overflow-x: auto;
+            font-size: 0.88rem;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .ai-msg pre { background: rgba(0,0,0,0.3); }
+        }
+
+        .ai-msg code {
+            font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+            font-size: 0.88em;
+        }
+
+        .ai-msg p:first-child { margin-top: 0; }
+        .ai-msg p:last-child  { margin-bottom: 0; }
         
         .source-ref { 
             font-size: 0.8em; 
             color: var(--text-light); 
-            margin-top: 12px; 
-            border-top: 1px solid rgba(0,0,0,0.1); 
+            margin-top: 10px; 
+            border-top: 1px solid rgba(128,128,128,0.15); 
             padding-top: 8px; 
         }
         .source-ref ul {
-            margin: 5px 0 0 0;
-            padding-left: 20px;
+            margin: 4px 0 0 0;
+            padding-left: 18px;
         }
         
         #input-area { 
-            padding: 24px 30px; 
+            padding: 18px 24px; 
             background: var(--surface); 
             border-top: 1px solid var(--border); 
             display: flex; 
-            gap: 12px; 
+            gap: 10px;
+            transition: background-color 0.3s, border-color 0.3s;
         }
+
         #user-input { 
             flex-grow: 1; 
-            padding: 16px; 
-            border: 1px solid var(--border); 
-            border-radius: 8px; 
+            padding: 14px 16px; 
+            border: 1.5px solid var(--border); 
+            border-radius: 10px; 
             outline: none; 
-            font-size: 1rem; 
+            font-size: 0.95rem; 
             font-family: inherit;
-            transition: border-color 0.2s;
+            background: var(--bg);
+            color: var(--text);
+            transition: border-color 0.2s, background 0.3s, color 0.3s;
         }
-        #user-input:focus {
-            border-color: var(--primary);
-        }
+        #user-input:focus { border-color: var(--primary); }
+        #user-input::placeholder { color: var(--text-light); }
+
         #send-btn { 
             background: var(--primary); 
             color: white; 
             border: none; 
-            padding: 0 28px; 
-            border-radius: 8px; 
+            padding: 0 24px; 
+            border-radius: 10px; 
             cursor: pointer; 
-            font-size: 1rem; 
+            font-size: 0.95rem; 
             font-weight: 600; 
-            transition: background 0.2s;
+            transition: background 0.2s, transform 0.1s;
         }
-        #send-btn:hover { background: var(--primary-hover); }
-        #send-btn:disabled { background: var(--text-light); cursor: not-allowed; }
+        #send-btn:hover { background: var(--primary-hover); transform: scale(1.02); }
+        #send-btn:active { transform: scale(0.98); }
+        #send-btn:disabled { background: var(--text-light); cursor: not-allowed; transform: none; }
         
         .typing-indicator {
             display: flex;
             gap: 5px;
-            padding: 16px 20px;
+            padding: 14px 18px;
             background: var(--ai-msg);
-            border-radius: 12px;
+            border-radius: 14px;
             border-bottom-left-radius: 4px;
             width: max-content;
         }
@@ -163,13 +257,39 @@
             0%, 80%, 100% { transform: scale(0); }
             40% { transform: scale(1); }
         }
+
+        .shortcut-hint {
+            font-size: 0.7rem;
+            color: var(--text-light);
+            text-align: center;
+            padding: 4px 0 8px;
+            opacity: 0.7;
+        }
+
+        .clear-btn {
+            background: none;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 0 14px;
+            cursor: pointer;
+            color: var(--text-light);
+            font-size: 0.85rem;
+            transition: all 0.2s;
+        }
+        .clear-btn:hover { border-color: var(--error); color: var(--error); }
     </style>
 </head>
 <body>
     <div id="app">
         <header>
-            <div class="logo">C</div>
-            Cerebro RAG
+            <div class="header-left">
+                <div class="logo">C</div>
+                <span>Cerebro</span>
+            </div>
+            <div class="status-indicator" id="status-indicator">
+                <div class="status-dot" id="status-dot"></div>
+                <span id="status-text">Checking...</span>
+            </div>
         </header>
         <div id="messages">
             <div class="message-wrapper ai-wrapper">
@@ -177,21 +297,104 @@
             </div>
         </div>
         <div id="input-area">
-            <input type="text" id="user-input" placeholder="Ask a question..." autocomplete="off">
+            <input type="text" id="user-input" placeholder="Ask a question... (Enter to send, Esc to clear)" autocomplete="off">
             <button id="send-btn">Send</button>
+            <button class="clear-btn" id="clear-btn" title="Clear conversation">Clear</button>
         </div>
     </div>
     
     <script>
+        // ── DOM Elements ─────────────────────────────────────
         const input = document.getElementById('user-input');
         const sendBtn = document.getElementById('send-btn');
+        const clearBtn = document.getElementById('clear-btn');
         const messagesContainer = document.getElementById('messages');
-        
-        input.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') sendMessage();
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+
+        // ── Conversation Persistence ─────────────────────────
+        const STORAGE_KEY = 'cerebro_chat_history';
+
+        function saveConversation() {
+            const messages = [];
+            messagesContainer.querySelectorAll('.message-wrapper').forEach(wrapper => {
+                const msg = wrapper.querySelector('.message');
+                if (!msg) return;
+                const sender = wrapper.classList.contains('user-wrapper') ? 'user' : 'ai';
+                const isHtml = msg.innerHTML !== msg.textContent;
+                messages.push({ sender, content: isHtml ? msg.innerHTML : msg.textContent, isHtml });
+            });
+            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(messages)); } catch(e) {}
+        }
+
+        function loadConversation() {
+            try {
+                const data = localStorage.getItem(STORAGE_KEY);
+                if (!data) return;
+                const messages = JSON.parse(data);
+                if (!messages.length) return;
+                
+                // Clear the default welcome message
+                messagesContainer.innerHTML = '';
+                
+                messages.forEach(({ sender, content, isHtml }) => {
+                    if (isHtml) {
+                        appendMessageHtml(content, sender, false);
+                    } else {
+                        appendMessage(content, sender, false);
+                    }
+                });
+                scrollToBottom();
+            } catch(e) {}
+        }
+
+        // ── Health Check ─────────────────────────────────────
+        async function checkHealth() {
+            try {
+                const response = await fetch('/health');
+                const data = await response.json();
+                if (data.status === 'healthy') {
+                    statusDot.className = 'status-dot connected';
+                    statusText.textContent = 'Connected';
+                } else {
+                    statusDot.className = 'status-dot degraded';
+                    statusText.textContent = data.status;
+                }
+            } catch {
+                statusDot.className = 'status-dot error';
+                statusText.textContent = 'Offline';
+            }
+        }
+
+        // ── Event Listeners ──────────────────────────────────
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+            if (e.key === 'Escape') {
+                input.value = '';
+                input.blur();
+            }
         });
+
+        // Global Ctrl+Enter shortcut
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                e.preventDefault();
+                input.focus();
+                sendMessage();
+            }
+        });
+
         sendBtn.addEventListener('click', sendMessage);
-        
+        clearBtn.addEventListener('click', () => {
+            messagesContainer.innerHTML = '';
+            appendMessage("Hello! I'm Cerebro. Ask me anything about your documents!", 'ai', false);
+            saveConversation();
+        });
+
+        // ── Core Functions ───────────────────────────────────
         async function sendMessage() {
             const text = input.value.trim();
             if (!text) return;
@@ -213,14 +416,17 @@
                 removeElement(loadingId);
                 
                 if (data.error) {
-                    appendMessageHtml('Error: ' + data.error, 'ai');
+                    appendMessage('⚠️ ' + data.error, 'ai');
                 } else {
-                    let html = marked.parse(data.answer);
+                    // Sanitize LLM output to prevent XSS
+                    let html = DOMPurify.sanitize(marked.parse(data.answer));
+                    
                     if (data.sources && data.sources.length > 0) {
-                        html += '<div class="source-ref"><strong>Sources:</strong><ul>';
+                        html += '<div class="source-ref"><strong>📎 Sources:</strong><ul>';
                         const uniqueSources = [...new Set(data.sources.map(s => s.doc_id))];
                         uniqueSources.forEach(s => {
-                            html += "<li>" + s.split('/').pop() + "</li>";
+                            const filename = s.split('/').pop();
+                            html += '<li>' + DOMPurify.sanitize(filename) + '</li>';
                         });
                         html += '</ul></div>';
                     }
@@ -228,7 +434,7 @@
                 }
             } catch (err) {
                 removeElement(loadingId);
-                appendMessage('Error communicating with server.', 'ai');
+                appendMessage('❌ Error communicating with server. Check that the server is running.', 'ai');
             } finally {
                 toggleInput(true);
             }
@@ -237,33 +443,35 @@
         function toggleInput(enabled) {
             input.disabled = !enabled;
             sendBtn.disabled = !enabled;
-            if(enabled) input.focus();
+            if (enabled) input.focus();
         }
         
-        function appendMessage(text, sender) {
+        function appendMessage(text, sender, persist = true) {
             const wrapper = document.createElement('div');
-            wrapper.className = "message-wrapper " + sender + "-wrapper";
+            wrapper.className = 'message-wrapper ' + sender + '-wrapper';
             
             const div = document.createElement('div');
-            div.className = "message " + sender + "-msg";
+            div.className = 'message ' + sender + '-msg';
             div.textContent = text;
             
             wrapper.appendChild(div);
             messagesContainer.appendChild(wrapper);
             scrollToBottom();
+            if (persist) saveConversation();
         }
         
-        function appendMessageHtml(htmlStr, sender) {
+        function appendMessageHtml(htmlStr, sender, persist = true) {
             const wrapper = document.createElement('div');
-            wrapper.className = "message-wrapper " + sender + "-wrapper";
+            wrapper.className = 'message-wrapper ' + sender + '-wrapper';
             
             const div = document.createElement('div');
-            div.className = "message " + sender + "-msg";
+            div.className = 'message ' + sender + '-msg';
             div.innerHTML = htmlStr;
             
             wrapper.appendChild(div);
             messagesContainer.appendChild(wrapper);
             scrollToBottom();
+            if (persist) saveConversation();
         }
         
         function addLoadingIndicator() {
@@ -271,7 +479,6 @@
             const wrapper = document.createElement('div');
             wrapper.id = id;
             wrapper.className = 'message-wrapper ai-wrapper';
-            
             wrapper.innerHTML = `
                 <div class="typing-indicator">
                     <div class="dot"></div>
@@ -292,6 +499,11 @@
         function scrollToBottom() {
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
         }
+
+        // ── Initialize ───────────────────────────────────────
+        loadConversation();
+        checkHealth();
+        setInterval(checkHealth, 30000); // Refresh health every 30s
     </script>
 </body>
 </html>

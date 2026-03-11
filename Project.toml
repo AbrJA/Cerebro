@@ -1,24 +1,18 @@
 name = "Cerebro"
 uuid = "12654e05-2770-44db-a380-e47612e7b9ed"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["AbrJA <abraham.jaimes.mx@gmail.com>"]
 
 [deps]
-DataStructures = "864edb3b-99cc-5e75-8d2d-829cb0a9cfe8"
-Genie = "c43c736e-a2d1-11e8-161f-af95117fbd1e"
-JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
-LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
+JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 PromptingTools = "670122d1-24a8-4d70-bfce-740807c42192"
 Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
-StructTypes = "856f2bd8-1eba-4b0a-8007-ebc267875bd4"
 
-[compat]
-DataStructures = "0.19.3"
-Genie = "5.35.7"
-JSON3 = "1.14.3"
-LinearAlgebra = "1.12.0"
-PromptingTools = "0.91.0"
-Serialization = "1.11.0"
-StaticArrays = "1.9.17"
-StructTypes = "1.11.0"
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
