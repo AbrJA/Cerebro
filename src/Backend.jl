@@ -155,8 +155,7 @@ function retrieve_context(
 
     # 1. Embed and quantize the query
     msg = aiembed(SCHEMA, query; model=config.embedding_model)
-    q_raw = Vector{Float32}(msg.content)
-    q_bin = SVector{N,UInt8}(compress_to_binary(q_raw))
+    embedding = SVector{N,UInt8}(compress_to_binary(msg.content))
 
     # 2. Fast hamming search over quantized index
     db_vectors = db.index.vectors
@@ -169,7 +168,7 @@ function retrieve_context(
     parent_dict = db.parent_lookup
 
     while length(top_parents) < k && n_candidates <= length(db_vectors)
-        closest = k_closest_parallel(db_vectors, q_bin, n_candidates;
+        closest = k_closest_parallel(db_vectors, embedding, n_candidates;
             min_parallel_threshold=config.min_parallel_threshold)
 
         empty!(top_parent_ids)
@@ -241,6 +240,10 @@ function generate_answer(query::AbstractString, context_parents::Vector{ParentCh
     user_msg = PromptingTools.UserMessage(
         string("Context:\n", context_str, "\n\nQuestion:\n", query)
     )
+
+    @info "Generating answer..."
+    @info "Context: $context_str"
+    @info "Query: $query"
 
     msg = aigenerate(SCHEMA, [sys_msg, user_msg]; model=config.chat_model)
     return msg.content
